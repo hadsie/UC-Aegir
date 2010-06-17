@@ -1,0 +1,6 @@
+; $Id$
+name = UC Aegir
+description = Allows products to be associated with install profiles
+dependencies[] = uc_product
+package = "Ubercart - extra"
+core = 6.x

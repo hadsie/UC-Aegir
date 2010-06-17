@@ -1,0 +1,317 @@
+<?php
+// $Id$
+
+/**
+ * @file
+ * Allows products to be associated with aegir sites
+ */
+
+require_once('uc_aegir.ca.inc');
+
+/**
+ * Implementation of hook_theme().
+ */
+function uc_aegir_theme() {
+  return array(
+    'uc_aegir_product' => array(
+      'arguments' => array('element' => NULL),
+    ),
+  );
+}
+
+/**
+ * Implementation of hook_uc_form_alter().
+ *
+ * Add site nid to the "add to cart" form for products with the
+ * aegir integration feature.
+ */
+function uc_aegir_uc_form_alter(&$form, &$form_state, $form_id) {
+  if ($form_id == 'uc_product_add_to_cart_form') {
+    $product = $form['node']['#value'];
+    $site_nid = $form_state['post']['aegir_site_nid'];
+    $site_nid = empty($site_nid) ? $product->aegir_site_nid : $site_nid;
+    $site = node_load($site_nid);
+    
+    // Check that this product has the aegir feature
+    $features = _uc_aegir_product_get_features($product, $site);
+    if (!empty($features)) {
+      $form['aegir_site_nid'] = array(
+        '#type' => 'hidden',
+        '#value' => $site_nid,
+      );
+    }
+  }
+}
+
+/**
+ * Implementation of hook_add_to_cart_data().
+ */
+function uc_aegir_add_to_cart_data($form_values) {
+  if (isset($form_values['aegir_site_nid'])) {
+    return array('aegir_site_nid' => $form_values['aegir_site_nid']);
+  }
+}
+
+/**
+ * Implementation of hook_product_description().
+ */
+function uc_aegir_product_description($product) {
+  $site_nid = $product->data['aegir_site_nid'];
+  $site = node_load($site_nid);
+
+  $description = array(
+    'aegir' => array(
+      'site' => array(
+        '#type' => 'value',
+        '#value' => $site,
+      ),
+      '#theme' => 'uc_aegir_product',
+      '#weight' => 1,
+    ),
+  );
+
+  return $description;
+}
+
+/**
+ * Implementation of hook_order().
+ *
+ * Save and delete product order <-> aegir site associations
+ */
+function uc_aegir_order($op, &$arg1, $arg2) {
+  if ($op == 'save') {
+    foreach ($arg1->products as $product) {
+      if (_uc_aegir_product_has_feature($product)) {
+        _uc_aegir_save_aegir_order($product);
+      }
+    }
+  }
+  elseif ($op == 'delete') {
+    foreach ($arg1->products as $product) {
+      if (_uc_aegir_product_has_feature($product)) {
+        _uc_aegir_delete_aegir_order($product);
+      }
+    }
+  }
+}
+
+/**
+ * Implementation of hook_product_feature().
+ */
+function uc_aegir_product_feature() {
+  $features[] = array(
+    'id' => 'aegir',
+    'title' => t('Aegir integration'),
+    'callback' => 'uc_aegir_feature_form',
+    'delete' => 'uc_aegir_feature_delete',
+    'settings' => 'uc_aegir_feature_settings',
+  );
+
+  return $features;
+}
+
+/**
+ * Callback to add the form on the product feature page.
+ */
+function uc_aegir_feature_form($form_state, $node, $feature) {
+  $form = array();
+
+  if (!empty($feature)) {
+    $aegir_product = db_fetch_object(db_query("SELECT * FROM {uc_aegir_products} WHERE pfid = %d", $feature['pfid']));
+  }
+
+  // @see _hosting_site_form_profile()
+  $profiles = hosting_get_profiles($platform);
+  foreach($profiles as $id => $name) {
+    if (in_array($name, array('hostslave', 'hostmaster'))) {
+      unset($profiles[$id]);
+    }
+  }
+  reset($profiles);
+
+  $form['nid'] = array(
+    '#type' => 'value',
+    '#value' => $node->nid,
+  );
+  $form['pfid'] = array(
+    '#type' => 'value',
+    '#value' => $feature['pfid'],
+  );
+  
+  $form['profile'] = array(
+    '#type' => 'select',
+    '#title' => t('Install profile'),
+    '#description' => t('Select the installation profile to associate with this product.'),
+    '#default_value' => $aegir_product->profile,
+    '#options' => $profiles,
+    '#required' => TRUE,
+  );
+
+  // Grab all the models on this product.
+  $models = uc_product_get_models($node);
+
+  $form['model'] = array(
+    '#type' => 'select',
+    '#title' => t('SKU'),
+    '#default_value' => $aegir_product->model,
+    '#description' => t('This is the SKU that will need to be purchased to associate the purchase with a site.'),
+    '#options' => $models,
+  );
+
+  return uc_product_feature_form($form);
+}
+
+function uc_aegir_feature_form_validate($form, &$form_state) {
+  // @TODO: Need to ensure that a single install profile isn't associated with
+  // more than one product.
+}
+
+/**
+ * Save the product feature settings.
+ */
+function uc_aegir_feature_form_submit($form, &$form_state) {
+  $aegir_product = array(
+    'pfid' => $form_state['values']['pfid'],
+    'model' => $form_state['values']['model'],
+    'profile' => $form_state['values']['profile'],
+  );
+
+  $profile_node = node_load($aegir_product['profile']);
+  $description = t('<strong>SKU:</strong> !sku<br />', array('!sku' => empty($aegir_product['model']) ? 'Any' : $aegir_product['model']));
+  $description .= t('<strong>Install profile:</strong> !profile', array('!profile' => $profile_node->title));
+
+  $data = array(
+    'pfid' => $form_state['values']['pfid'],
+    'nid' => $form_state['values']['nid'],
+    'fid' => 'aegir',
+    'description' => $description,
+  );
+
+  $form_state['redirect'] = uc_product_feature_save($data);
+
+  // Insert or update uc_aegir_product table
+  if (empty($file_product['pfid'])) {
+    $aegir_product['pfid'] = db_last_insert_id('uc_product_features', 'pfid');
+  }
+
+  $apid = db_result(db_query("SELECT apid FROM {uc_aegir_products} WHERE pfid = %d", $aegir_product));
+
+  $key = NULL;
+  if ($fpid) {
+    $key = 'apid';
+    $aegir_product['apid'] = $fpid;
+  }
+
+  drupal_write_record('uc_aegir_products', $aegir_product, $key);
+}
+
+function uc_aegir_feature_settings() {
+  $form = array();
+  return $form;
+}
+
+function uc_aegir_feature_delete($feature) {
+  db_query("DELETE FROM {uc_aegir_products} WHERE pfid = %d", $feature['pfid']);
+}
+
+/******* Helper functions *******/
+
+function uc_aegir_orders_by_site($site_nid) {
+  $results = db_query("SELECT o.order_id, o.order_status, ao.product FROM {uc_orders} o LEFT JOIN {uc_order_products} op ON o.order_id = op.order_id LEFT JOIN {uc_aegir_orders} ao ON op.order_product_id = ao.order_product_id WHERE site = %d", $site_nid);
+
+  $orders = array();
+  while ($order = db_fetch_object($results)) {
+    $orders[] = $order;
+  }
+
+  return $orders;
+}
+
+function uc_aegir_profile_get_product($profile) {
+  if ($nid = db_result(db_query("SELECT pf.nid FROM {uc_product_features} pf LEFT JOIN {uc_aegir_products} ap on pf.pfid = ap.pfid WHERE ap.profile = %d AND pf.fid = 'aegir'", $profile))) {
+    return node_load($nid);
+  }
+}
+
+/**
+ * Helper function to get a list of all aegir features associated with a
+ * particular product.
+ */
+function _uc_aegir_product_get_features($product, $site = NULL) {
+  $args = array($product->model);
+  if ($site) {
+    $filter = ' AND profile = %d';
+    $args[] = $site->profile;
+  }
+  
+  $result = db_query("SELECT ap.* FROM {uc_product_features} pf LEFT JOIN {uc_aegir_products} ap ON pf.pfid = ap.pfid WHERE pf.fid = 'aegir' AND (ap.model = '' OR ap.model = '%s') $filter", $args);
+  $features = array();
+  while ($feature = db_fetch_object($result)) {
+    $profile = node_load($feature->profile);
+    $feature->profile_name = $profile->title;
+    $features[] = $feature;
+  }
+  return $features;
+}
+
+/**
+ * Helper function to return a list of products that use this feature.
+ *
+ * @TODO: I don't think this is used anywhere and can be removed.
+ */
+function _uc_aegir_get_product_nids() {
+  // @TODO: Is there no UC API call for this?
+  $result = db_query("SELECT nid FROM {uc_product_features} WHERE fid = 'aegir'");
+  $products = array();
+  while ($feature = db_fetch_object($result)) {
+    $products[] = $feature->nid;
+  }
+  return $products;
+}
+
+/**
+ * Helper function to save to the aegir orders table.
+ *
+ * Returns TRUE if the item is saved. FALSE if it already exists in the db.
+ */
+function _uc_aegir_save_aegir_order($product) {
+  $site_nid = $product->data['aegir_site_nid'];
+  $product_nid = $product->nid;
+  $order_id = $product->order_id;
+  $order_product_id = $product->order_product_id;
+
+  $aoid = db_result(db_query('SELECT aoid FROM {uc_aegir_orders} WHERE site = %d AND product = %d AND order_id = %d AND order_product_id = %d', $site_nid, $product_nid, $order_id, $order_product_id));
+  if (!$aoid) {
+    db_query('INSERT INTO {uc_aegir_orders} SET site = %d, product = %d, order_id = %d, order_product_id = %d',  $site_nid, $product_nid, $order_id, $order_product_id);
+    return TRUE;
+  }
+}
+
+/**
+ * Helper function to delete from the aegir orders table.
+ */
+function _uc_aegir_delete_aegir_order($product) {
+  $site_nid = $product->data['aegir_site_nid'];
+  $product_nid = $product->nid;
+  $order_id = $product->order_id;
+  $order_product_id = $product->order_product_id;
+
+  db_query('DELETE FROM {uc_aegir_orders} WHERE site = %d AND product = %d AND order_id = %d AND order_product_id = %d', $site_nid, $product_nid, $order_id, $order_product_id);
+}
+
+/**
+ * Return TRUE if the given product (from an order) has the aegir feature
+ * and also a correct SKU. 
+ */
+function _uc_aegir_product_has_feature($product) {
+  $pfid = db_result(db_query("SELECT pf.pfid FROM {uc_product_features} pf LEFT JOIN {uc_aegir_products} ap ON pf.pfid = ap.pfid WHERE pf.fid = 'aegir' AND nid = %d AND (ap.model = '' OR ap.model = '%s')", $product->nid, $product->model));
+  return $pfid;
+}
+
+/**
+ * Theme the site URL on the shopping cart and checkout forms.
+ */
+function theme_uc_aegir_product($element) {
+  $site = $element['site']['#value'];
+  return '<div class="product-site-url">' . $site->title . '</div>';
+}

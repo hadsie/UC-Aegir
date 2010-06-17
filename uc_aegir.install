@@ -1,0 +1,90 @@
+<?php
+// $Id$
+
+/**
+ * Implementation of hook_install().
+ */
+function uc_aegir_install() {
+  drupal_install_schema('uc_aegir');
+}
+
+/**
+ * Implementation of hook_uninstall().
+ */
+function uc_aegir_uninstall() {
+  drupal_uninstall_schema('uc_aegir');
+  db_query("DELETE FROM {uc_product_features} WHERE fid = 'aegir'");
+}
+
+/**
+ * Implementation of hook_schema().
+ */
+function uc_aegir_schema() {
+  $schema = array();
+
+  $schema['uc_aegir_products'] = array(
+    'description' => 'Maps aegir product features to profiles.',
+    'fields' => array(
+      'apid' => array(
+        'description' => 'Primary key: the ID for the aegir-product combination.',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'pfid' => array(
+        'description' => 'The {uc_product_features}.pfid.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'profile' => array(
+        'description' => 'The install profile.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'model' => array(
+        'description' => 'The product model.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => FALSE,
+      ),
+    ),
+    'primary key' => array('apid'),
+  );
+
+  $schema['uc_aegir_orders'] = array(
+    'fields' => array(
+      'aoid' => array(
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'site' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'product' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'order_id' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'order_product_id' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+    ),
+    'primary key' => array('aoid'),
+  );
+
+  return $schema;
+}
